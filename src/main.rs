@@ -78,7 +78,7 @@ async fn table_migration(pool: &SqlitePool) -> Result<(), anyhow::Error> {
     let migration = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS anime (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY,
             title TEXT NOT NULL,
             kind TEXT NOT NULL,
             episodes INT NOT NULL,
@@ -87,7 +87,8 @@ async fn table_migration(pool: &SqlitePool) -> Result<(), anyhow::Error> {
             year INT NOT NULL,
             picture TEXT NOT NULL,
             thumbnail TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(title, kind, episodes)
         )
     "#,
     )
@@ -125,6 +126,10 @@ async fn main() -> Result<(), anyhow::Error> {
             r#"
             INSERT INTO anime (title, kind, episodes, status, season,year, picture, thumbnail)
             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+            ON CONFLICT (title, kind, episodes) DO UPDATE SET
+                picture = excluded.picture,
+                status = excluded.status,
+                thumbnail = excluded.thumbnail 
         "#,
         )
         .bind(item.title)
