@@ -1,9 +1,11 @@
+use anyhow::Ok;
 use color_eyre::eyre::Result;
-use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::SqlitePool;
-use std::{env, fs};
-//TODO: move db create to migration
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePool},
+    Connection, SqliteConnection,
+};
+use std::{fs, rc::Rc, str::FromStr};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AnimeDatabase {
@@ -56,16 +58,24 @@ struct AnimeRow {
     thumbnail: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    dotenv().ok();
-    let data = fs::read_to_string("anime-offline-database.json")?;
-    let output: AnimeDatabase = serde_json::from_str(data.as_str())?;
-    let db_url = env::var("DATABASE_URL")?;
-    dbg!(&db_url);
-    let pool = SqlitePool::connect(&db_url).await?;
-    //title, kind, episodes, status, season, picture, thumbnail
-    let create_table = sqlx::query!(
+async fn create_db() -> Result<Rc<str>, anyhow::Error> {
+    let db_url = "sqlite://./anime.db";
+    let options = SqliteConnectOptions::from_str(db_url)?
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .foreign_keys(true);
+    let mut conn = SqliteConnection::connect_with(&options).await?;
+    let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode;")
+        .fetch_one(&mut conn)
+        .await?;
+    println!("current journal mode: {}", journal_mode);
+    conn.close().await?;
+    Ok(Rc::from(db_url))
+}
+
+async fn table_migration(pool: &SqlitePool) -> Result<(), anyhow::Error> {
+    let migration = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS anime (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,11 +89,23 @@ async fn main() -> Result<()> {
             thumbnail TEXT NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-    "#
+    "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await?;
+    dbg!(migration);
+    Ok(())
+}
 
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    let data = fs::read_to_string("anime-offline-database.json")?;
+    let output: AnimeDatabase = serde_json::from_str(data.as_str())?;
+    let db_name = create_db().await?;
+    println!("{}", &db_name);
+    let pool = SqlitePool::connect(&db_name).await?;
+    table_migration(&pool).await?;
+    //title, kind, episodes, status, season, picture, thumbnail
     let items: Vec<AnimeRow> = output
         .data
         .into_iter()
@@ -99,24 +121,22 @@ async fn main() -> Result<()> {
         })
         .collect();
     for item in items {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO anime (title, kind, episodes, status, season,year, picture, thumbnail)
             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
         "#,
-            item.title,
-            item.kind,
-            item.episodes,
-            item.status,
-            item.season,
-            item.year,
-            item.picture,
-            item.thumbnail
         )
+        .bind(item.title)
+        .bind(item.kind)
+        .bind(item.episodes)
+        .bind(item.status)
+        .bind(item.season)
+        .bind(item.year)
+        .bind(item.picture)
+        .bind(item.thumbnail)
         .execute(&pool)
         .await?;
     }
-    dbg!(create_table);
-    // println!("{:?}", output);
     Ok(())
 }
